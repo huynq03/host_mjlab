@@ -38,3 +38,26 @@ Tests, audit JSON reports, conversion/comparison scripts and previous generated 
 The original reward equations and PPO are retained. PhysX and MuJoCo are not physically identical; see [the implementation audit](docs/AUDIT.md) for explicit differences and preserved source quirks. No long training or learned recovery-success claim is made.
 
 HoST code/assets retain the OpenRobotLab MIT license. Original RSL-RL algorithm files retain their NVIDIA/ETH BSD notices.
+
+## Configure individual rewards
+
+`make_env_cfg()` creates one native MJLab reward entry for each of the 24 active
+original terms. Edit coefficients before creating the environment, for example:
+
+```python
+from host_mjlab.host.host_env_cfg import make_env_cfg
+
+cfg = make_env_cfg()
+cfg.rewards["regu_action_rate"].weight = -0.01  # Original coefficient.
+# A weight of 0.0 disables a term; removing an entry also disables it.
+```
+
+Task coefficients are dimensionless factors in the original product. Other
+coefficients are multiplied by the unchanged 0.02 s control timestep. Their
+per-term values are logged by MJLab; `aggregate_rewards` reduces the original
+task product and three sums before resets and sends those four rewards to PPO.
+The scalar sum returned by native MJLab is diagnostic. Training must use the
+registered `HostRunner`/`HostAdapter` to preserve Multi-Critic PPO.
+
+The latest changes were reviewed using **static analysis only**. See
+[the static review](docs/STATIC_REVIEW.md) for API coverage and remaining risks.

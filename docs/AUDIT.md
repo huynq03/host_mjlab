@@ -15,7 +15,7 @@ Only the original **Mini-Pi ground** task is registered. H1/G1, slope, wall, pla
 | `BaseTask` simulation loop and scene | Unmodified `ManagerBasedRlEnv`, `SceneCfg`, `SimulationCfg`, MuJoCo-Warp |
 | `compute_observations` | `ObservationTermCfg` calling `mdp.observations.history`; six-frame state retained in `HostState` |
 | `_compute_torques` and decimation loop | Custom `ActionTerm` processing once/control step, applying torques every physics substep through `BuiltinMotorActuatorCfg` |
-| `compute_reward` | Four `RewardTermCfg` terms; task product and three additive groups, separately exposed by adapter |
+| `compute_reward` | 24 individual `RewardTermCfg` terms; a step event preserves the task product and three additive groups exposed by the adapter |
 | `check_termination` | Timeout and velocity `TerminationTermCfg` terms |
 | `_reset_dofs`, `_reset_root_states` | Reset `EventTermCfg`, public entity state writers |
 | Shape/body creation randomization | Startup `EventTermCfg` declaring expanded model fields and constant recomputation |
@@ -68,7 +68,7 @@ Exact trajectory equality is impossible across PhysX and MuJoCo. These are expli
 | Body damping | Original linear/angular decay .01/s is applied as per-body force -m*.01*v and principal-frame torque -I*.01*ω. Free-body per-step decay is approximately .99995 at dt=.005. Constraint coupling/integration and source velocity caps (1000) are not exactly reproduced. |
 | Contacts | Native net-force sensors expose current MuJoCo solved contacts. Original collection mode=2 aggregates substeps; with configured one simulation substep this is the same sampling frequency, not guaranteed identical impulses. None of the active Mini-Pi reward terms reads contact force. |
 | State freshness | An extra forward pass refreshes poses before termination/reward evaluation, eliminating MJLab's 5 ms pose lag. Physics integrator/COM velocity definitions still differ between engines. |
-| RNG | The distributions and update cadence are retained. Torch versus original NumPy/Isaac sampling, different draw ordering and physics prevent cross-engine bitwise trajectories. Same-seed CPU Warp determinism is tested separately. |
+| RNG | The distributions and update cadence are retained. Torch versus original NumPy/Isaac sampling, different draw ordering and physics prevent cross-engine bitwise trajectories. This revision has only static inspection; runtime determinism is not established. |
 
 Nominal total robot mass is 6.92121732 kg, with 22 bodies excluding world and 12 actuated joints. Joint limits are stored in `assets/minipi/joints.py`. No Isaac Gym trajectory comparison or empirical restitution calibration has been performed.
 
@@ -77,3 +77,7 @@ Nominal total robot mass is 6.92121732 kg, with 22 bodies excluding world and 12
 The 13 active STL files now come from the reference project asset zoo at the user’s request. Joint transforms, masses, inertias, actuators and primitive collision definitions remain those of the HoST-derived MJCF. The hip-pitch mesh is also used for collision on each side, so changing that mesh can change contact geometry. No simulation or training was run for this update.
 
 Files with different bytes from the previously bundled HoST meshes: none (all 13 are byte-identical).
+
+## Latest static review
+
+See [STATIC_REVIEW.md](STATIC_REVIEW.md) for reset fixes, per-term manager rewards, runner/checkpoint API compatibility and remaining risks. This revision was not executed.

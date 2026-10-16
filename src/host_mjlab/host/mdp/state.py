@@ -11,9 +11,15 @@ class HostState(OriginalRewards):
     def __init__(self, env):
         self.env, self.robot = env, env.scene["robot"]
         self.cfg, self.device, self.num_envs = CFG, env.device, env.num_envs
-        self.dt, self.is_gaussian = 0.02, True
+        self.dt, self.is_gaussian = env.step_dt, True
+        if abs(self.dt - 0.02) > 1e-12:
+            raise ValueError("Original HoST requires 0.005 s physics dt and decimation 4")
         self.joint_ids, names = self.robot.find_joints(JOINT_NAMES, preserve_order=True)
-        assert tuple(names) == JOINT_NAMES
+        if tuple(names) != JOINT_NAMES:
+            raise ValueError("Mini-Pi joint mapping differs from the original HoST order")
+        # MJLab entity target writers require tensor indices for Cartesian
+        # indexing together with a tensor of reset environment IDs.
+        self.joint_ids = torch.tensor(self.joint_ids, device=env.device, dtype=torch.long)
 
         def z(*shape):
             return torch.zeros(env.num_envs, *shape, device=env.device)
@@ -58,6 +64,9 @@ class HostState(OriginalRewards):
         self.terminal_observations = z(258)
         self.cached_step = -1
         self.observation_step = -1
+        self.history_reset_ids = None
+        self.reward_values = {}
+        self.reward_step = -1
         bodies = self.robot.body_names
 
         def body_ids(match, exclude=()):
@@ -110,21 +119,38 @@ class HostState(OriginalRewards):
         gravity[:, 2] = -1
         self.projected_gravity = quat_apply_inverse(d.root_link_quat_w, gravity)
 
-    def frame(self):
+    def capture_terminal_observations(self, env_ids):
+        """Capture before MJLab resets simulation/entity buffers; no RNG side effects."""
+        if not len(env_ids):
+            return
+        device = torch.device(self.device)
+        devices = (
+            [device.index if device.index is not None else torch.cuda.current_device()]
+            if device.type == "cuda"
+            else []
+        )
+        with torch.random.fork_rng(devices=devices):
+            frame = self.frame(env_ids)
+            self.terminal_observations[env_ids] = torch.cat(
+                (self.history[env_ids, 43:], frame), dim=1
+            ).clamp(-100, 100)
+
+    def frame(self, env_ids=None):
+        ids = slice(None) if env_ids is None else env_ids
         obs = torch.cat(
             (
-                self.base_ang_vel * 0.25,
-                self.projected_gravity,
-                self.dof_pos,
-                self.dof_vel * 0.05,
-                self.actions,
-                self.action_rescale + (torch.rand_like(self.action_rescale) - 0.5) * 0.05,
+                self.base_ang_vel[ids] * 0.25,
+                self.projected_gravity[ids],
+                self.dof_pos[ids],
+                self.dof_vel[ids] * 0.05,
+                self.actions[ids],
+                self.action_rescale[ids] + (torch.rand_like(self.action_rescale[ids]) - 0.5) * 0.05,
             ),
             dim=-1,
         )
         if CFG.noise.add_noise:
             obs += (2 * torch.rand_like(obs) - 1) * self.noise_scale_vec
-        return obs * (self.real_episode_length_buf[:, None] > 30)
+        return obs * (self.real_episode_length_buf[ids, None] > 30)
 
 
 def state(env):

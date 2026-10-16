@@ -20,9 +20,9 @@ def main():
     p.add_argument("--video", type=Path)
     args = p.parse_args()
     if args.num_envs <= 0 or args.steps <= 0 or args.iterations <= 0:
-        p.error('--num-envs, --steps and --iterations must be positive')
-    if args.mode in ('play', 'evaluate') and args.checkpoint is None:
-        p.error('--checkpoint is required for play/evaluate')
+        p.error("--num-envs, --steps and --iterations must be positive")
+    if args.mode in ("play", "evaluate") and args.checkpoint is None:
+        p.error("--checkpoint is required for play/evaluate")
     from mjlab.envs import ManagerBasedRlEnv
     from host_mjlab.host.host_env_cfg import make_env_cfg
     from host_mjlab.algorithms.host_ppo.runner import HostRunner
@@ -35,13 +35,13 @@ def main():
         cfg, device=args.device, render_mode="rgb_array" if args.video else None
     )
     log_dir = args.log_dir or Path("logs/host") / datetime.now().strftime("%Y%m%d_%H%M%S")
+    runner = None
     try:
         if args.mode == "train":
             runner = HostRunner(env, log_dir=log_dir)
             if args.checkpoint:
                 runner.load(args.checkpoint)
             runner.learn(args.iterations)
-            runner.writer.close()
             return
         adapter = HostAdapter(env)
         obs, critic = adapter.reset(seed=args.seed)
@@ -81,9 +81,9 @@ def main():
 
             args.video.parent.mkdir(parents=True, exist_ok=True)
             iio.imwrite(args.video, frames, fps=50)
-        if runner:
-            runner.writer.close()
     finally:
+        if runner is not None and runner.writer is not None:
+            runner.writer.close()
         env.close()
 
 

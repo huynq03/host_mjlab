@@ -9,12 +9,18 @@ def reset_robot(env, env_ids):
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device)
     n = len(env_ids)
-    # Snapshot for diagnostics; original PPO deliberately bootstraps pre-step V.
-    devices = [torch.device(env.device)] if str(env.device).startswith("cuda") else []
-    with torch.random.fork_rng(devices=devices):
-        s.terminal_observations[env_ids] = torch.cat(
-            (s.history[env_ids, 43:], s.frame()[env_ids]), dim=1
-        ).clamp(-100, 100)
+    if n == 0:
+        return
+    # CurriculumManager already consumed terminal old_headheight before this
+    # reset event. Never sample a terminal frame after scene.reset().
+    s.pending_pull[env_ids] = 0
+    s.torques[env_ids] = 0
+    s.joint_pos_target[env_ids] = 0
+    zeros = torch.zeros(n, s.robot.num_bodies, 3, device=env.device)
+    s.robot.write_external_wrench_to_sim(zeros, zeros, env_ids=env_ids)
+    s.robot.set_joint_effort_target(
+        torch.zeros(n, 12, device=env.device), joint_ids=s.joint_ids, env_ids=env_ids
+    )
     q = (torch.rand(n, 12, device=env.device) * 0.2 - 0.1).clamp(
         s.dof_pos_limits[:, 0], s.dof_pos_limits[:, 1]
     )
@@ -42,7 +48,10 @@ def reset_robot(env, env_ids):
         getattr(s, name)[env_ids] = torch.rand(n, 12, device=env.device) * (hi - lo) + lo
     s.actuation_offset[env_ids] *= s.torque_limits
     # History is intentionally not cleared: original HoST shifts in zero frames.
-    s.observation_step = -1
+    if s.history_reset_ids is None:
+        s.history_reset_ids = env_ids.clone()
+    else:
+        s.history_reset_ids = torch.unique(torch.cat((s.history_reset_ids, env_ids)))
 
 
 @requires_model_fields(

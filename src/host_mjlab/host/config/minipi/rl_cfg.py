@@ -17,6 +17,7 @@ class HostRunnerCfg(RslRlBaseRunnerCfg):
 def runner_cfg():
     return HostRunnerCfg(
         seed=1,
+        logger="tensorboard",
         num_steps_per_env=50,
         max_iterations=12000,
         save_interval=100,

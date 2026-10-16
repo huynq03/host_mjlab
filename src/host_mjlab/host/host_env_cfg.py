@@ -2,7 +2,6 @@
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
-from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
@@ -12,10 +11,9 @@ from mjlab.terrains import TerrainEntityCfg
 from mjlab.sensor import ContactSensorCfg, ContactMatch
 from mjlab.utils.spec_config import CollisionCfg
 from host_mjlab.assets.minipi.robot import robot_cfg
-from .settings import GROUPS
 from .mdp.actions import HostActionCfg
 from .mdp.observations import history
-from .mdp.rewards import reward_group
+from .mdp.rewards import make_reward_cfg, aggregate_rewards
 from .mdp.events import reset_robot, randomize_physics, ground_contact_pairs
 from .mdp.terminations import time_out, velocity_limit
 from .mdp.curricula import recovery
@@ -72,15 +70,14 @@ def make_env_cfg(num_envs=4096):
             )
         },
         actions={"host": HostActionCfg(entity_name="robot")},
-        rewards={
-            g: RewardTermCfg(func=reward_group, weight=1.0, params={"group": g}) for g in GROUPS
-        },
+        rewards=make_reward_cfg(),
         terminations={
             "timeout": TerminationTermCfg(func=time_out, time_out=True),
             "velocity": TerminationTermCfg(func=velocity_limit),
         },
         events={
             "physics": EventTermCfg(func=randomize_physics, mode="startup"),
+            "aggregate_rewards": EventTermCfg(func=aggregate_rewards, mode="step"),
             "reset": EventTermCfg(func=reset_robot, mode="reset"),
         },
         curriculum={"recovery": CurriculumTermCfg(func=recovery)},

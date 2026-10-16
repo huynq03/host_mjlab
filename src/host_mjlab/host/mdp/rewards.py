@@ -43,10 +43,12 @@ class OriginalRewards:
             )
             delta_max_headheight = head_height - self.max_headheight
             delta_headheight = head_height - self.old_headheight
-            self.max_headheight = torch.max(
-                torch.cat((head_height, self.old_headheight), dim=1), dim=1
-            )[0].unsqueeze(-1)
-            self.old_headheight = head_height
+            self.max_headheight.copy_(
+                torch.max(torch.cat((head_height, self.old_headheight), dim=1), dim=1)[0].unsqueeze(
+                    -1
+                )
+            )
+            self.old_headheight.copy_(head_height)
             return reward
 
     def _reward_dof_acc(self):
@@ -331,24 +333,167 @@ class OriginalRewards:
         return reward * standup
 
 
-def reward_group(env, group):
+def _evaluate(env, name):
+    """Expose one original equation as a native MJLab reward term.
+
+    Cache the *unweighted* value for the HoST product/sum reduction. MJLab
+    applies the independently configurable weight for its own term logs.
+    """
     from .state import state
-    from host_mjlab.host.settings import DATA, GROUPS
 
     s = state(env)
-    scales = DATA["env"]["rewards" if group == "task" else "constraints"]["scales"]
-    result = (
-        torch.ones(s.num_envs, device=s.device)
-        if group == "task"
-        else torch.zeros(s.num_envs, device=s.device)
-    )
-    for name, scale in sorted(scales.items()):
-        if not scale or not name.startswith(group + "_"):
-            continue
-        value = getattr(s, "_reward_" + name.split("_", 1)[1])().reshape(s.num_envs) * scale
+    value = getattr(s, "_reward_" + name.split("_", 1)[1])().reshape(s.num_envs)
+    s.reward_values[name] = (env.common_step_counter, value)
+    return value if name.startswith("task_") else value * env.step_dt
+
+
+def task_head_height(env):
+    return _evaluate(env, "task_head_height")
+
+
+def task_orientation(env):
+    return _evaluate(env, "task_orientation")
+
+
+def regu_action_rate(env):
+    return _evaluate(env, "regu_action_rate")
+
+
+def regu_dof_acc(env):
+    return _evaluate(env, "regu_dof_acc")
+
+
+def regu_dof_pos_limits(env):
+    return _evaluate(env, "regu_dof_pos_limits")
+
+
+def regu_dof_vel(env):
+    return _evaluate(env, "regu_dof_vel")
+
+
+def regu_dof_vel_limits(env):
+    return _evaluate(env, "regu_dof_vel_limits")
+
+
+def regu_joint_power(env):
+    return _evaluate(env, "regu_joint_power")
+
+
+def regu_joint_tracking_error(env):
+    return _evaluate(env, "regu_joint_tracking_error")
+
+
+def regu_smoothness(env):
+    return _evaluate(env, "regu_smoothness")
+
+
+def regu_torques(env):
+    return _evaluate(env, "regu_torques")
+
+
+def style_feet_distance(env):
+    return _evaluate(env, "style_feet_distance")
+
+
+def style_ground_parallel(env):
+    return _evaluate(env, "style_ground_parallel")
+
+
+def style_hip_roll_deviation(env):
+    return _evaluate(env, "style_hip_roll_deviation")
+
+
+def style_hip_yaw_deviation(env):
+    return _evaluate(env, "style_hip_yaw_deviation")
+
+
+def style_knee_deviation(env):
+    return _evaluate(env, "style_knee_deviation")
+
+
+def style_left_foot_displacement(env):
+    return _evaluate(env, "style_left_foot_displacement")
+
+
+def style_right_foot_displacement(env):
+    return _evaluate(env, "style_right_foot_displacement")
+
+
+def style_style_ang_vel_xy(env):
+    return _evaluate(env, "style_style_ang_vel_xy")
+
+
+def target_ang_vel_xy(env):
+    return _evaluate(env, "target_ang_vel_xy")
+
+
+def target_feet_height_var(env):
+    return _evaluate(env, "target_feet_height_var")
+
+
+def target_lin_vel_xy(env):
+    return _evaluate(env, "target_lin_vel_xy")
+
+
+def target_target_base_height(env):
+    return _evaluate(env, "target_target_base_height")
+
+
+def target_target_orientation(env):
+    return _evaluate(env, "target_target_orientation")
+
+
+def make_reward_cfg():
+    """Each original coefficient is a manager weight, independently editable."""
+    from mjlab.managers.reward_manager import RewardTermCfg
+    from host_mjlab.host.settings import DATA
+
+    terms = {}
+    for section in ("rewards", "constraints"):
+        for name, coefficient in sorted(DATA["env"][section]["scales"].items()):
+            if coefficient:
+                terms[name] = RewardTermCfg(func=globals()[name], weight=coefficient)
+    return terms
+
+
+def aggregate_rewards(env, env_ids=None):
+    """Step event: reduce terms after RewardManager.compute, before any reset.
+
+    Use public manager configuration so edits to term weights/enablement affect
+    both MJLab logging and the four values delivered to original HoST PPO.
+    MJLab's scalar reward remains a diagnostic sum, not the training reward.
+    """
+    from .state import state
+    from host_mjlab.host.settings import GROUPS
+
+    s = state(env)
+    s.group_rewards.zero_()
+    s.group_rewards[:, 0] = 1.0
+    head_evaluated = False
+    for name in env.reward_manager.active_terms:
+        group = name.split("_", 1)[0]
+        if group not in GROUPS:
+            raise ValueError(f"HoST reward {name!r} must belong to {GROUPS}")
+        cfg = env.reward_manager.get_term_cfg(name)
+        if cfg.weight == 0:
+            continue  # As in original HoST, a disabled task factor is omitted.
+        stamp, raw = s.reward_values[name]
+        if stamp != env.common_step_counter:
+            raise RuntimeError(f"HoST reward {name!r} was not evaluated this step")
+        coefficient = cfg.weight if group == "task" else cfg.weight * env.step_dt
+        value = raw * coefficient
+        index = GROUPS.index(group)
         if group == "task":
-            result *= value
+            s.group_rewards[:, index] *= value
         else:
-            result += value * s.dt
-    s.group_rewards[:, GROUPS.index(group)] = result
-    return result
+            s.group_rewards[:, index] += value
+            if s.cfg.constraints.only_positive_rewards:
+                s.group_rewards[:, index].clamp_(min=0)
+        head_evaluated |= name == "task_head_height"
+    # Curriculum measures physical recovery even when its reward is disabled.
+    if not head_evaluated:
+        s._reward_head_height()
+    for index, group in enumerate(GROUPS):
+        env.extras["log"]["HoST/" + group] = s.group_rewards[:, index].mean()
+    s.reward_step = env.common_step_counter
+    s.capture_terminal_observations(env.reset_buf.nonzero(as_tuple=False).flatten())

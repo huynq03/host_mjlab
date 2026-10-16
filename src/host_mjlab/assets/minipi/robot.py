@@ -5,8 +5,9 @@ import mujoco
 from mjlab.actuator import BuiltinMotorActuatorCfg
 from mjlab.entity import EntityCfg, EntityArticulationInfoCfg
 
-ROOT = Path(__file__).parent
 from .joints import JOINTS
+
+ROOT = Path(__file__).parent
 JOINT_NAMES = tuple(j["name"] for j in JOINTS)
 
 

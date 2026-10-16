@@ -2,6 +2,8 @@ from .state import state
 
 
 def recovery(env, env_ids):
+    # MJLab _reset_idx calls this BEFORE sim.reset, scene.reset and reset events.
+    # old_headheight must still describe the terminal pose, not the reset pose.
     s = state(env)
     if env_ids is None:
         return
