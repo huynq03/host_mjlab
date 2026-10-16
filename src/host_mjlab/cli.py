@@ -25,8 +25,7 @@ def main():
         p.error("--checkpoint is required for play/evaluate")
     from mjlab.envs import ManagerBasedRlEnv
     from host_mjlab.host.host_env_cfg import make_env_cfg
-    from host_mjlab.algorithms.host_ppo.runner import HostRunner
-    from host_mjlab.algorithms.host_ppo.adapter import HostAdapter
+    from host_mjlab.algorithms.host_ppo.runner import HostRunner, HostAdapter
 
     torch.manual_seed(args.seed)
     cfg = make_env_cfg(args.num_envs)

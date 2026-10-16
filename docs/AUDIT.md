@@ -246,3 +246,17 @@ the relative mesh directory, mesh bytes, joint limits, task equations, baseline
 configuration and algorithm were preserved. The historical source URDF remains
 available in the read-only original HoST repository. Static review notes were
 consolidated into this document. No simulation or tests were run for cleanup.
+
+## HoST PPO folder cleanup
+
+`HostAdapter` now lives in `runner.py`, retaining its class implementation.
+The original `split_and_pad_trajectories` helper now lives in
+`rollout_storage.py`, retaining its function implementation and the same
+NVIDIA/ETH license header. `adapter.py` and `utils.py` were removed. Unreferenced
+`unpad_trajectories`, `RunningMeanStd`, `Normalizer` and their unused constants
+/imports were omitted. No observation normalization or AMP training was in use.
+The ActorCritic, PPO and RolloutStorage classes are unchanged; in particular
+group-wise GAE, reward-group advantage weights, batching and smoothness losses
+are unchanged. CLI imports use the new adapter location. This cleanup is a
+module consolidation, not a training-speed optimization. It was inspected
+using AST comparison and lint only; no runtime validation was performed.

@@ -65,3 +65,10 @@ The latest changes were reviewed using **static analysis only**. See
 Task discovery uses the `host_mjlab` package entry point, which imports
 `host/config/minipi/` directly, following mjlab_playground. Unused source URDF
 and `base_link.STL` are omitted; the runtime robot is defined by its MJCF.
+
+The `algorithms/host_ppo/` folder has four implementation modules:
+`actor_critic.py` (networks), `ppo.py` (optimization), `rollout_storage.py`
+(storage and GAE), and `runner.py` (MJLab adapter, collection and checkpoints).
+The adapter is imported as `from host_mjlab.algorithms.host_ppo.runner import HostAdapter`.
+Unused normalizer/AMP utilities are omitted; the original trajectory-splitting
+helper lives beside the storage that uses it.
