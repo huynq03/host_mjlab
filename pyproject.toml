@@ -15,7 +15,7 @@ build-backend = "uv_build"
 host-mjlab = "host_mjlab.cli:main"
 
 [project.entry-points."mjlab.tasks"]
-host_mjlab = "host_mjlab.tasks"
+host_mjlab = "host_mjlab"
 
 [tool.ruff]
 line-length = 100

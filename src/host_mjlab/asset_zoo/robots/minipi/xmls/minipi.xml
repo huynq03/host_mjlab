@@ -1,5 +1,5 @@
 <mujoco model="HoST-original-Mini-Pi">
-  <compiler angle="radian" meshdir="source/meshes" fusestatic="false" balanceinertia="true" />
+  <compiler angle="radian" meshdir="assets" fusestatic="false" balanceinertia="true" />
   <option timestep="0.005" gravity="0 0 -9.81" integrator="Euler" iterations="8" cone="pyramidal" />
   <asset>
     <mesh name="mesh_0" file="baselink_1.STL" />

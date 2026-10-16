@@ -2,7 +2,7 @@
 
 import torch
 from mjlab.utils.lab_api.math import quat_apply_inverse
-from host_mjlab.assets.minipi.robot import JOINTS, JOINT_NAMES
+from host_mjlab.asset_zoo.robots.minipi.minipi_constants import JOINTS, JOINT_NAMES
 from host_mjlab.host.settings import CFG
 from .rewards import OriginalRewards
 

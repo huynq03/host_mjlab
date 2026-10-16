@@ -12,7 +12,7 @@ JOINT_NAMES = tuple(j["name"] for j in JOINTS)
 
 
 def get_spec():
-    return mujoco.MjSpec.from_file(str(ROOT / "minipi.xml"))
+    return mujoco.MjSpec.from_file(str(ROOT / "xmls" / "minipi.xml"))
 
 
 def entity_spec():

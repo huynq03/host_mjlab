@@ -10,7 +10,7 @@ from mjlab.sim import SimulationCfg, MujocoCfg
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.sensor import ContactSensorCfg, ContactMatch
 from mjlab.utils.spec_config import CollisionCfg
-from host_mjlab.assets.minipi.robot import robot_cfg
+from host_mjlab.asset_zoo.robots.minipi.minipi_constants import robot_cfg
 from .mdp.actions import HostActionCfg
 from .mdp.observations import history
 from .mdp.rewards import make_reward_cfg, aggregate_rewards

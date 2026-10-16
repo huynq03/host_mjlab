@@ -30,7 +30,7 @@ uv run host-mjlab evaluate --checkpoint logs/host/RUN/model_100.pt --num-envs 16
 - `src/host_mjlab/host/mdp/`: task observations, control, rewards, resets, randomization and curriculum.
 - `src/host_mjlab/host/original_config.py`: original HoST configuration.
 - `src/host_mjlab/algorithms/host_ppo/`: four-critic PPO, storage, adapter and runner.
-- `src/host_mjlab/assets/minipi/`: HoST-derived robot MJCF, URDF and joint limits; active meshes copied from `mjlab_playground`’s `hightorque_minipi` asset zoo.
+- `src/host_mjlab/asset_zoo/robots/minipi/`: robot configuration, joint limits and `xmls/minipi.xml`; its 13 active meshes are in `xmls/assets/`, copied from the reference asset zoo.
 - `src/host_mjlab/host/config/minipi/`: MJLab task registration.
 
 Tests, audit JSON reports, conversion/comparison scripts and previous generated run artifacts have been removed. Runtime configuration is Python; training still writes its resolved configuration and evaluation outputs to the run directory.
@@ -60,4 +60,8 @@ The scalar sum returned by native MJLab is diagnostic. Training must use the
 registered `HostRunner`/`HostAdapter` to preserve Multi-Critic PPO.
 
 The latest changes were reviewed using **static analysis only**. See
-[the static review](docs/STATIC_REVIEW.md) for API coverage and remaining risks.
+[the static review](docs/AUDIT.md#static-review-of-host-mjlab-port) for API coverage and remaining risks.
+
+Task discovery uses the `host_mjlab` package entry point, which imports
+`host/config/minipi/` directly, following mjlab_playground. Unused source URDF
+and `base_link.STL` are omitted; the runtime robot is defined by its MJCF.
