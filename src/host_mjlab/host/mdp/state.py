@@ -3,15 +3,15 @@
 import torch
 from mjlab.utils.lab_api.math import quat_apply_inverse
 from host_mjlab.asset_zoo.robots.minipi.minipi_constants import JOINTS, JOINT_NAMES
-from host_mjlab.host.settings import CFG
-from .rewards import OriginalRewards
 
 
-class HostState(OriginalRewards):
+class HostState:
     def __init__(self, env):
         self.env, self.robot = env, env.scene["robot"]
-        self.cfg, self.device, self.num_envs = CFG, env.device, env.num_envs
-        self.dt, self.is_gaussian = env.step_dt, True
+        self.device, self.num_envs = env.device, env.num_envs
+        self.control = env.cfg.actions["host"]
+        self.observation_cfg = env.cfg.host_observations
+        self.dt = env.step_dt
         if abs(self.dt - 0.02) > 1e-12:
             raise ValueError("Original HoST requires 0.005 s physics dt and decimation 4")
         self.joint_ids, names = self.robot.find_joints(JOINT_NAMES, preserve_order=True)
@@ -24,49 +24,61 @@ class HostState(OriginalRewards):
         def z(*shape):
             return torch.zeros(env.num_envs, *shape, device=env.device)
 
-        self.actions = z(12)
-        self.last_actions = z(12)
-        self.last_last_actions = z(12)
-        self.last_dof_vel = z(12)
-        self.torques = z(12)
-        self.joint_pos_target = z(12)
-        self.action_rescale = z(1) + 1
-        self.force = z(1) + 15
+        self.num_joints = len(JOINT_NAMES)
+        self.frame_dim = 7 + 3 * self.num_joints
+        self.history_dim = self.frame_dim * self.observation_cfg.history_length
+        self.actions = z(self.num_joints)
+        self.last_actions = z(self.num_joints)
+        self.last_last_actions = z(self.num_joints)
+        self.last_dof_vel = z(self.num_joints)
+        self.torques = z(self.num_joints)
+        self.joint_pos_target = z(self.num_joints)
+        self.action_rescale = z(1) + self.control.action_scale
+        self.force = z(1) + self.control.initial_pull_force
         self.pending_pull = z(1)
         self.old_headheight = z(1)
         self.max_headheight = z(1)
         self.real_episode_length_buf = z().long()
-        self.history = z(258)
-        self.delay_buffer = torch.zeros(5, env.num_envs, 12, device=env.device)
-        self.delay_idx = torch.randint(5, (env.num_envs,), device=env.device)
-        self.Kp_factors = z(12) + 1
-        self.Kd_factors = z(12) + 1
-        self.motor_strength = z(12) + 1
-        self.actuation_offset = z(12)
+        self.history = z(self.history_dim)
+        self.delay_buffer = torch.zeros(
+            self.control.delay_steps, env.num_envs, self.num_joints, device=env.device
+        )
+        self.delay_idx = torch.randint(self.control.delay_steps, (env.num_envs,), device=env.device)
+        self.Kp_factors = z(self.num_joints) + 1
+        self.Kd_factors = z(self.num_joints) + 1
+        self.motor_strength = z(self.num_joints) + 1
+        self.actuation_offset = z(self.num_joints)
         self.p_gains = torch.tensor(
-            [
-                next(v for k, v in CFG.control.stiffness.__dict__.items() if k in n)
-                for n in JOINT_NAMES
-            ],
+            [next(v for k, v in self.control.stiffness.items() if k in n) for n in JOINT_NAMES],
             device=env.device,
         )
-        self.d_gains = torch.full((12,), 0.2, device=env.device)
+        self.d_gains = torch.full((self.num_joints,), self.control.damping, device=env.device)
         self.torque_limits = torch.tensor([j["effort"] for j in JOINTS], device=env.device)
         self.dof_vel_limits = torch.tensor([j["velocity"] for j in JOINTS], device=env.device)
         self.dof_pos_limits = torch.tensor(
-            [[j["lower"] * 0.9, j["upper"] * 0.9] for j in JOINTS], device=env.device
+            [
+                [
+                    j["lower"] * self.robot.cfg.articulation.soft_joint_pos_limit_factor,
+                    j["upper"] * self.robot.cfg.articulation.soft_joint_pos_limit_factor,
+                ]
+                for j in JOINTS
+            ],
+            device=env.device,
         )
-        self.target_dof_pos = z(12)
+        self.target_dof_pos = z(self.num_joints)
+        obs = self.observation_cfg
         self.noise_scale_vec = torch.tensor(
-            [0.05] * 3 + [0.05] * 3 + [0.01] * 12 + [0.075] * 12 + [0.0] * 13, device=env.device
+            [obs.angular_velocity_noise] * 3
+            + [obs.gravity_noise] * 3
+            + [obs.joint_position_noise] * self.num_joints
+            + [obs.joint_velocity_noise] * self.num_joints
+            + [0.0] * (self.num_joints + 1),
+            device=env.device,
         )
-        self.group_rewards = z(4)
-        self.terminal_observations = z(258)
+        self.terminal_observations = z(self.history_dim)
         self.cached_step = -1
         self.observation_step = -1
         self.history_reset_ids = None
-        self.reward_values = {}
-        self.reward_step = -1
         bodies = self.robot.body_names
 
         def body_ids(match, exclude=()):
@@ -95,16 +107,16 @@ class HostState(OriginalRewards):
             setattr(
                 self,
                 side + "_leg_joints_indices",
-                [JOINT_NAMES.index(n) for n in getattr(CFG.asset, side + "_leg_joints")],
+                [
+                    JOINT_NAMES.index(n)
+                    for n in [n for n in JOINT_NAMES if n.startswith(prefix + "_")]
+                ],
             )
-        self.hip_joint_indices = [
-            JOINT_NAMES.index(n) for n in CFG.asset.left_hip_joints + CFG.asset.right_hip_joints
-        ]
+        self.hip_joint_indices = [JOINT_NAMES.index(n) for n in ["l_thigh_joint", "r_thigh_joint"]]
         self.hip_roll_joint_indices = [
-            JOINT_NAMES.index(n)
-            for n in CFG.asset.left_hip_roll_joints + CFG.asset.right_hip_roll_joints
+            JOINT_NAMES.index(n) for n in ["l_hip_roll_joint", "r_hip_roll_joint"]
         ]
-        self.knee_joint_indices = [JOINT_NAMES.index(n) for n in CFG.asset.knee_joints]
+        self.knee_joint_indices = [JOINT_NAMES.index(n) for n in ["l_calf_joint", "r_calf_joint"]]
         self.refresh()
 
     def refresh(self):
@@ -132,25 +144,27 @@ class HostState(OriginalRewards):
         with torch.random.fork_rng(devices=devices):
             frame = self.frame(env_ids)
             self.terminal_observations[env_ids] = torch.cat(
-                (self.history[env_ids, 43:], frame), dim=1
-            ).clamp(-100, 100)
+                (self.history[env_ids, self.frame_dim :], frame), dim=1
+            ).clamp(-self.observation_cfg.clip, self.observation_cfg.clip)
 
     def frame(self, env_ids=None):
         ids = slice(None) if env_ids is None else env_ids
         obs = torch.cat(
             (
-                self.base_ang_vel[ids] * 0.25,
+                self.base_ang_vel[ids] * self.observation_cfg.angular_velocity_scale,
                 self.projected_gravity[ids],
-                self.dof_pos[ids],
-                self.dof_vel[ids] * 0.05,
+                self.dof_pos[ids] * self.observation_cfg.joint_position_scale,
+                self.dof_vel[ids] * self.observation_cfg.joint_velocity_scale,
                 self.actions[ids],
-                self.action_rescale[ids] + (torch.rand_like(self.action_rescale[ids]) - 0.5) * 0.05,
+                self.action_rescale[ids]
+                + (torch.rand_like(self.action_rescale[ids]) - 0.5)
+                * self.observation_cfg.action_scale_noise,
             ),
             dim=-1,
         )
-        if CFG.noise.add_noise:
+        if self.observation_cfg.enable_noise:
             obs += (2 * torch.rand_like(obs) - 1) * self.noise_scale_vec
-        return obs * (self.real_episode_length_buf[ids, None] > 30)
+        return obs * (self.real_episode_length_buf[ids, None] > self.control.settle_steps)
 
 
 def state(env):

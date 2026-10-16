@@ -1,6 +1,7 @@
 """MJLab-compatible runner around the unchanged original HoST Multi-Critic PPO."""
 
 from copy import deepcopy
+from dataclasses import asdict, is_dataclass
 import json
 import math
 import os
@@ -12,12 +13,32 @@ from torch.utils.tensorboard import SummaryWriter
 
 from .actor_critic import ActorCritic
 from .ppo import PPO
-from host_mjlab.host.settings import DATA, GROUPS
+from host_mjlab.host.settings import GROUPS
 
 
 class HostAdapter:
-    def __init__(self, env):
+    def __init__(self, env, obs_groups=None):
         self.env = env.unwrapped
+        groups = obs_groups or {
+            "actor": ("actor",),
+            "critic": (("critic",) if "critic" in self.env.cfg.observations else ("actor",)),
+        }
+        self.actor_groups = tuple(groups["actor"])
+        self.critic_groups = tuple(groups["critic"])
+        dimensions = self.env.observation_manager.group_obs_dim
+
+        def size(names):
+            if not names or any(not isinstance(dimensions[name], tuple) for name in names):
+                raise ValueError("HoST requires concatenated tensor observation groups")
+            return sum(math.prod(dimensions[name]) for name in names)
+
+        self.actor_dim, self.critic_dim = size(self.actor_groups), size(self.critic_groups)
+        self.action_dim = self.env.action_manager.total_action_dim
+        if self.actor_dim != self.critic_dim:
+            raise ValueError(
+                "Original HoST smoothness loss requires equal actor/critic input widths"
+            )
+
         if not self.env.cfg.auto_reset:
             raise ValueError("Original HoST PPO adapter requires auto_reset=True")
 
@@ -26,38 +47,47 @@ class HostAdapter:
 
         self.env.reset(seed=seed)
         # Original BaseTask.reset() performs one zero-action simulation step.
-        obs, critic, _, _, _ = self.step(torch.zeros(self.env.num_envs, 12, device=self.env.device))
+        obs, critic, _, _, _ = self.step(
+            torch.zeros(self.env.num_envs, self.action_dim, device=self.env.device)
+        )
         self._check_observations(obs, critic)
         return obs, critic
 
     def step(self, actions):
         obs, _scalar, terminated, truncated, info = self.env.step(actions)
         s = self.env.host_state
-        if s.reward_step != self.env.common_step_counter:
-            raise RuntimeError("HoST aggregate_rewards step event is missing or out of order")
-        self._check_observations(obs["actor"], obs.get("critic", obs["actor"]))
+        manager = self.env.reward_manager
+        if manager.step_counter != self.env.common_step_counter:
+            raise RuntimeError("HoST reward manager did not evaluate this step")
+        actor = self.select_observations(obs, self.actor_groups)
+        critic = self.select_observations(obs, self.critic_groups)
+        self._check_observations(actor, critic)
         info = dict(info)
         info["time_outs"] = truncated
         info["terminal_observations"] = s.terminal_observations.clone()
         return (
-            obs["actor"],
-            obs.get("critic", obs["actor"]),
-            s.group_rewards.clone(),
+            actor,
+            critic,
+            manager.group_rewards.clone(),
             terminated | truncated,
             info,
         )
 
+    @staticmethod
+    def select_observations(observations, names):
+        tensors = [observations[name].reshape(observations[name].shape[0], -1) for name in names]
+        return tensors[0] if len(tensors) == 1 else torch.cat(tensors, dim=-1)
+
     def _check_observations(self, actor, critic):
-        expected = (self.env.num_envs, 258)
-        if actor.shape != expected or critic.shape != expected:
-            raise ValueError(
-                "Original HoST networks and mixed-observation smoothness require "
-                f"actor and critic observations of shape {expected}"
-            )
+        if actor.shape != (self.env.num_envs, self.actor_dim) or critic.shape != (
+            self.env.num_envs,
+            self.critic_dim,
+        ):
+            raise ValueError("Observation shape changed after HoST network initialization")
 
 
 class HostRunner:
-    def __init__(self, env, train_cfg=None, log_dir=None, device=None):
+    def __init__(self, env, train_cfg, log_dir=None, device=None):
         if int(os.environ.get("WORLD_SIZE", "1")) > 1:
             raise ValueError("Original HoST PPO has no distributed gradient synchronization")
         # Native MJLab CLI passes RslRlVecEnvWrapper; training must use our
@@ -66,22 +96,17 @@ class HostRunner:
         self.device = torch.device(device or self.env.device)
         if self.device != torch.device(self.env.device):
             raise ValueError("HoST policy, storage and environment must share a device")
-        self.adapter = HostAdapter(self.env)
-        cfg = deepcopy(DATA["ppo"])
-        supplied = deepcopy(train_cfg or {})
-        if supplied.get("num_critics", 4) != 4:
+        if train_cfg is None:
+            raise ValueError("Pass the task's native HostRunnerCfg to HostRunner")
+        cfg = asdict(train_cfg) if is_dataclass(train_cfg) else deepcopy(train_cfg)
+        self.adapter = HostAdapter(self.env, cfg.get("obs_groups"))
+        if cfg.get("num_critics", len(GROUPS)) != len(GROUPS):
             raise ValueError("HoST requires four independent critics")
-        cfg["policy"].update(supplied.get("policy", {}))
-        cfg["algorithm"].update(supplied.get("algorithm", {}))
-        self.reward_group_weights = list(
-            supplied.get("reward_group_weights", DATA["env"]["rewards"]["reward_group_weights"])
-        )
-        if len(self.reward_group_weights) != 4:
+        self.reward_group_weights = list(cfg["reward_group_weights"])
+        if len(self.reward_group_weights) != len(GROUPS):
             raise ValueError("Expected one advantage weight per HoST reward group")
-        self.num_steps_per_env = supplied.get(
-            "num_steps_per_env", cfg["runner"]["num_steps_per_env"]
-        )
-        self.save_interval = supplied.get("save_interval", cfg["runner"]["save_interval"])
+        self.num_steps_per_env = cfg["num_steps_per_env"]
+        self.save_interval = cfg["save_interval"]
         if self.num_steps_per_env < 2 or self.save_interval < 1:
             raise ValueError(
                 "HoST requires at least two rollout steps and a positive save interval"
@@ -89,13 +114,28 @@ class HostRunner:
         batch_size = self.env.num_envs * (self.num_steps_per_env - 1)
         if batch_size < cfg["algorithm"]["num_mini_batches"]:
             raise ValueError("Too few rollout transitions for the configured PPO minibatches")
-        self.policy = ActorCritic(258, 258, 12, 4, **cfg["policy"]).to(self.device)
+        self.policy = ActorCritic(
+            self.adapter.actor_dim,
+            self.adapter.critic_dim,
+            self.adapter.action_dim,
+            len(GROUPS),
+            **cfg["policy"],
+        ).to(self.device)
         self.alg = PPO(
             self.policy, self.reward_group_weights, device=self.device, **cfg["algorithm"]
         )
-        critic_shape = [258] if "critic" in self.env.cfg.observations else [None]
+        critic_shape = (
+            [self.adapter.critic_dim]
+            if self.adapter.critic_groups != self.adapter.actor_groups
+            else [None]
+        )
         self.alg.init_storage(
-            self.env.num_envs, self.num_steps_per_env, [258], critic_shape, [12], 4
+            self.env.num_envs,
+            self.num_steps_per_env,
+            [self.adapter.actor_dim],
+            critic_shape,
+            [self.adapter.action_dim],
+            len(GROUPS),
         )
         self.cfg = cfg
         self.log_dir = Path(log_dir) if log_dir is not None else None
@@ -106,7 +146,7 @@ class HostRunner:
             (self.log_dir / "config.json").write_text(
                 json.dumps(
                     {
-                        "host": DATA,
+                        "observations": asdict(self.env.cfg.host_observations),
                         "runner": cfg,
                         "reward_group_weights": self.reward_group_weights,
                         "num_steps_per_env": self.num_steps_per_env,
@@ -168,7 +208,7 @@ class HostRunner:
                 "optimizer_state_dict": self.alg.optimizer.state_dict(),
                 "iter": self.iteration,
                 "learning_rate": self.alg.learning_rate,
-                "host_config": DATA,
+                "host_config": self.cfg,
                 "infos": infos,
             },
             path,
@@ -236,7 +276,9 @@ class HostRunner:
         def policy(observations):
             # MJLab viewer supplies TensorDict; the local CLI supplies a tensor.
             actor_obs = (
-                observations if isinstance(observations, torch.Tensor) else observations["actor"]
+                observations
+                if isinstance(observations, torch.Tensor)
+                else self.adapter.select_observations(observations, self.adapter.actor_groups)
             )
             return self.policy.act_inference(actor_obs.to(target))
 

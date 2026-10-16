@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import torch
 from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
 from .state import state
@@ -6,6 +6,26 @@ from .state import state
 
 @dataclass(kw_only=True)
 class HostActionCfg(ActionTermCfg):
+    settle_steps: int = 30
+    action_scale: float = 1.0
+    action_clip: float = 100.0
+    initial_pull_force: float = 15.0
+    pull_orientation_threshold: float = -0.8
+    delay_steps: int = 5
+    stiffness: dict[str, float] = field(
+        default_factory=lambda: {
+            "hip_pitch": 30.0,
+            "hip_roll": 15.0,
+            "thigh": 15.0,
+            "calf": 30.0,
+            "ankle_pitch": 12.0,
+            "ankle_roll": 5.0,
+        }
+    )
+    damping: float = 0.2
+    body_linear_damping: float = 0.01
+    body_angular_damping: float = 0.01
+
     def build(self, env):
         return HostAction(self, env)
 
@@ -13,7 +33,7 @@ class HostActionCfg(ActionTermCfg):
 class HostAction(ActionTerm):
     @property
     def action_dim(self):
-        return 12
+        return self._entity.num_joints
 
     @property
     def raw_action(self):
@@ -24,8 +44,8 @@ class HostAction(ActionTerm):
         s.last_last_actions.copy_(s.last_actions)
         s.last_actions.copy_(s.actions)
         s.last_dof_vel.copy_(s.robot.data.joint_vel[:, s.joint_ids])
-        s.actions.copy_(actions.clamp(-100, 100))
-        s.actions.mul_(s.real_episode_length_buf[:, None] > 30)
+        s.actions.copy_(actions.clamp(-self.cfg.action_clip, self.cfg.action_clip))
+        s.actions.mul_(s.real_episode_length_buf[:, None] > self.cfg.settle_steps)
 
     def apply_actions(self):
         s = state(self._env)
@@ -50,8 +70,8 @@ class HostAction(ActionTerm):
         force[:, s.base_indices, 2] += s.pending_pull
         s.pending_pull.copy_(
             s.force
-            * (s.real_episode_length_buf[:, None] > 30)
-            * (s.projected_gravity[:, 2:3] < -0.8)
+            * (s.real_episode_length_buf[:, None] > self.cfg.settle_steps)
+            * (s.projected_gravity[:, 2:3] < self.cfg.pull_orientation_threshold)
         )
         s.robot.write_external_wrench_to_sim(force, torque)
 
@@ -68,7 +88,7 @@ def body_damping(env, s):
     ids = s.robot.indexing.body_ids
     mass = env.sim.model.body_mass[:, ids]
     inertia = env.sim.model.body_inertia[:, ids]
-    force = -0.01 * mass[..., None] * d.body_com_lin_vel_w
+    force = -s.control.body_linear_damping * mass[..., None] * d.body_com_lin_vel_w
     omega = quat_apply_inverse(d.body_com_quat_w, d.body_com_ang_vel_w)
-    torque = quat_apply(d.body_com_quat_w, -0.01 * inertia * omega)
+    torque = quat_apply(d.body_com_quat_w, -s.control.body_angular_damping * inertia * omega)
     return force, torque

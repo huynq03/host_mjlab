@@ -1,15 +1,23 @@
-"""Resolved original configuration, without legged_gym dependencies."""
+"""Typed observation settings owned by the native environment configuration.
 
-from types import SimpleNamespace
+original_config.py is historical reference data, not an active configuration.
+"""
 
-from .original_config import DATA
+from dataclasses import dataclass
 
-
-def namespace(value):
-    if isinstance(value, dict):
-        return SimpleNamespace(**{k: namespace(v) for k, v in value.items()})
-    return value
+GROUPS = ("task", "regu", "style", "target")
 
 
-CFG = namespace(DATA["env"])
-GROUPS = tuple(CFG.rewards.reward_groups)
+@dataclass(kw_only=True)
+class HostObservationCfg:
+    history_length: int = 6
+    angular_velocity_scale: float = 0.25
+    joint_position_scale: float = 1.0
+    joint_velocity_scale: float = 0.05
+    angular_velocity_noise: float = 0.05
+    gravity_noise: float = 0.05
+    joint_position_noise: float = 0.01
+    joint_velocity_noise: float = 0.075
+    action_scale_noise: float = 0.05
+    enable_noise: bool = True
+    clip: float = 100.0

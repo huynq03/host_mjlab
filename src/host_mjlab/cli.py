@@ -25,6 +25,7 @@ def main():
         p.error("--checkpoint is required for play/evaluate")
     from mjlab.envs import ManagerBasedRlEnv
     from host_mjlab.host.host_env_cfg import make_env_cfg
+    from host_mjlab.host.config.minipi.rl_cfg import runner_cfg
     from host_mjlab.algorithms.host_ppo.runner import HostRunner, HostAdapter
 
     torch.manual_seed(args.seed)
@@ -37,7 +38,7 @@ def main():
     runner = None
     try:
         if args.mode == "train":
-            runner = HostRunner(env, log_dir=log_dir)
+            runner = HostRunner(env, runner_cfg(), log_dir=log_dir)
             if args.checkpoint:
                 runner.load(args.checkpoint)
             runner.learn(args.iterations)
@@ -46,7 +47,7 @@ def main():
         obs, critic = adapter.reset(seed=args.seed)
         runner = None
         if args.checkpoint:
-            runner = HostRunner(env, log_dir=log_dir)
+            runner = HostRunner(env, runner_cfg(), log_dir=log_dir)
             runner.load(args.checkpoint, load_optimizer=False)
         frames = []
         total = torch.zeros(4, device=env.device)
@@ -56,7 +57,7 @@ def main():
                 action = (
                     runner.policy.act_inference(obs)
                     if runner
-                    else torch.zeros(args.num_envs, 12, device=env.device)
+                    else torch.zeros(args.num_envs, adapter.action_dim, device=env.device)
                 )
                 obs, critic, rewards, dones, infos = adapter.step(action)
                 if not torch.isfinite(obs).all() or not torch.isfinite(rewards).all():

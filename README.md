@@ -28,7 +28,9 @@ uv run host-mjlab evaluate --checkpoint logs/host/RUN/model_100.pt --num-envs 16
 ## Code
 
 - `src/host_mjlab/host/mdp/`: task observations, control, rewards, resets, randomization and curriculum.
-- `src/host_mjlab/host/original_config.py`: original HoST configuration.
+- `src/host_mjlab/host/host_env_cfg.py`: active native environment and manager-term configuration.
+- `src/host_mjlab/host/config/minipi/rl_cfg.py`: active policy/PPO/runner configuration.
+- `src/host_mjlab/host/original_config.py`: historical HoST reference only; never imported at runtime.
 - `src/host_mjlab/algorithms/host_ppo/`: four-critic PPO, storage, adapter and runner.
 - `src/host_mjlab/asset_zoo/robots/minipi/`: robot configuration, joint limits and `xmls/minipi.xml`; its 13 active meshes are in `xmls/assets/`, copied from the reference asset zoo.
 - `src/host_mjlab/host/config/minipi/`: MJLab task registration.
@@ -52,12 +54,29 @@ cfg.rewards["regu_action_rate"].weight = -0.01  # Original coefficient.
 # A weight of 0.0 disables a term; removing an entry also disables it.
 ```
 
-Task coefficients are dimensionless factors in the original product. Other
-coefficients are multiplied by the unchanged 0.02 s control timestep. Their
-per-term values are logged by MJLab; `aggregate_rewards` reduces the original
-task product and three sums before resets and sends those four rewards to PPO.
-The scalar sum returned by native MJLab is diagnostic. Training must use the
-registered `HostRunner`/`HostAdapter` to preserve Multi-Critic PPO.
+Reward functions are ordinary standalone MDP functions returning unweighted
+`(num_envs,)` tensors. `HostRewardManager`, installed by a startup event, calls
+each configured function once. It multiplies task factors without dt scaling
+and adds each other group with its coefficient × 0.02 s. Its public
+`group_rewards` buffer feeds the unchanged PPO; the scalar environment reward
+is the sum of those four groups. No per-function cache or wrapper is required.
+
+New native terms can use a group prefix, or an explicit assignment:
+
+```python
+from mjlab.managers.reward_manager import RewardTermCfg
+
+cfg.rewards["my_term"] = RewardTermCfg(func=my_reward_function, weight=1.0)
+cfg.reward_term_groups["my_term"] = "style"
+# Alternatively name it "style_my_term" to infer its group automatically.
+```
+
+Function parameters, reward coefficients, reset/randomization ranges and
+curriculum thresholds live in the native term configs. Control settings live
+in `cfg.actions["host"]`; observation scales/noise/history live in
+`cfg.host_observations`. Pass `runner_cfg()` to `HostRunner` when constructing
+it directly. The runner derives observation and action widths from MJLab
+managers rather than fixing them to Mini-Pi's 258/12 baseline dimensions.
 
 The latest changes were reviewed using **static analysis only**. See
 [the static review](docs/AUDIT.md#static-review-of-host-mjlab-port) for API coverage and remaining risks.

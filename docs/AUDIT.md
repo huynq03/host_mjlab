@@ -1,5 +1,73 @@
 # Original HoST → MJLab audit
 
+## Current architecture refinement
+
+This section supersedes the historical implementation details below. This
+revision was reviewed statically only: no project imports, environment creation,
+simulation, training, evaluation, GPU execution or tests were performed.
+
+- `mdp/rewards.py` contains 24 standalone functions for the original active
+  baseline equations. `OriginalRewards`, inheritance-based dispatch, `_evaluate`
+  and the per-term reward-value cache are gone. Inactive helpers from other
+  robot/task variants are not exposed as Mini-Pi rewards.
+- Each function returns an unweighted `(num_envs,)` vector. Its coefficients
+  and equation parameters are declared explicitly as native `RewardTermCfg`
+  entries in `host_env_cfg.py`. A newly registered function or class-based term
+  does not need to cooperate with hidden aggregation state.
+- `HostRewardManager` extends installed MJLab 1.6.0 `RewardManager`, evaluating
+  each enabled term exactly once, in the original order. It directly reduces
+  task factors as products, and other groups as sums of raw × (coefficient × dt).
+  The original float32 group-buffer accumulation, omitted zero-weight terms and
+  optional additive positive clipping are retained. The scalar reward is now
+  the sum of the four groups; the PPO adapter consumes public `group_rewards`.
+- Term names infer their group from the prefix, or `cfg.reward_term_groups`
+  explicitly assigns arbitrary names to task/regu/style/target. Custom terms
+  need only satisfy MJLab's usual callable/shape/device contract. Stateful
+  classes keep native reset and visualization hooks.
+- MJLab 1.6.0 directly constructs its stock reward manager inside
+  `load_managers`, with no configurable factory. A startup event installs the
+  local extension before the first step, reusing the original manager's
+  **publicly resolved config objects**. Class-based term constructors are not
+  rerun. The subclass owns its inherited bookkeeping buffers; there is no
+  per-function/private value-cache dependency. This does rely on the pinned
+  1.6.0 superclass buffer conventions and must be reviewed on MJLab upgrades.
+- Relative head height tracking is separate from reward evaluation. It updates
+  once after pose refresh and before rewards, so functions remain pure and
+  curriculum progress does not depend on reward enablement. Its equation,
+  previous-height max update and curriculum ordering are unchanged.
+- `HostEnvCfg`, `HostActionCfg`, `HostObservationCfg`, native term parameters
+  and `HostRunnerCfg` own active settings. `original_config.py` is unchanged
+  historical data with no runtime imports. PPO defaults are explicit typed
+  policy/algorithm configs; the runner requires this config as an argument.
+- Observation widths come from public `ObservationManager.group_obs_dim`;
+  action width comes from `ActionManager.total_action_dim`. Configured actor
+  and critic observation groups are flattened/concatenated. Original critic
+  smoothness requires equal actor/critic widths; unequal widths are rejected.
+  Baseline remains 6 × 43 = 258 observations, 12 actions and four critics.
+- Layout, task ID and registration, robot MJCF/meshes/inertia/actuators and
+  original network/PPO/storage implementations are unchanged. No recovery
+  stages, normalization or alternative PPO behavior were introduced.
+
+Static review compared all 24 term names/coefficients and equation parameters
+with the reference config. Twenty-three function bodies are AST-equivalent to
+the previous original methods after state/config-name substitution. Head-height
+reward retains the same tolerance equation, now squeezed to a native vector;
+its state tracking was inspected separately in `update_recovery_metrics`.
+Typed policy/PPO defaults match the reference configuration. AST parsing,
+Ruff lint, modified-file format checks and Git whitespace checks were used.
+These are static findings, not evidence of runtime or numerical validation.
+
+Remaining risks: installation of the manager extension, custom stateful terms,
+partial resets, viewer/checkpoint integration and GPU kernels are unexecuted in
+this revision. Resume still restores optimization rather than simulator/RNG or
+per-environment curriculum state. PhysX/MuJoCo differences and original PPO's
+partially filled first rollout/pre-step timeout bootstrap remain as described
+below. The installed native observation/action/reward/event APIs were read
+from `.venv/lib/python3.13/site-packages/mjlab`, without executing them.
+
+## Historical audit notes
+
+
 ## Scope and provenance
 
 The executable source of truth is HoST commit `70bb580949a336a920833700e4b5dc3bf7fe87ce`, specifically `legged_gym/envs/pi/pi_host_ground.py`, `pi_config_ground.py`, inherited `base/legged_robot_config.py`, the original `pi_12dof_release_v1.urdf`, and `rsl_rl/rsl_rl/{modules,storage,algorithms}`. The task, algorithm and MJCF structure originate from HoST. At the user’s subsequent request, all 13 meshes referenced by the MJCF were replaced with copies from `mjlab_playground/src/mjlab_playground/asset_zoo/robots/hightorque_minipi/xmls/assets/`. No runtime dependency on that repository is introduced. Both input repositories were read only.
