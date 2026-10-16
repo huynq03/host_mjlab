@@ -14,19 +14,13 @@ class HostRewardManager(RewardManager):
     """
 
     def __init__(self, env, resolved_manager):
-        super().__init__({}, env, scale_by_dt=False)
-        self.cfg = {
+        self._resolved_terms = {
             name: resolved_manager.get_term_cfg(name) for name in resolved_manager.active_terms
         }
-        self._term_names = list(self.cfg)
-        self._term_cfgs = list(self.cfg.values())
-        self._class_term_cfgs = [
-            cfg for cfg in self._term_cfgs if callable(getattr(cfg.func, "reset", None))
-        ]
-        self._episode_sums = {
-            name: torch.zeros(self.num_envs, device=self.device) for name in self._term_names
-        }
-        self._step_reward = torch.zeros(self.num_envs, len(self._term_names), device=self.device)
+        # ManagerBase invokes our _prepare_terms hook. Let RewardManager allocate
+        # its own logging/reward buffers after that hook has registered the terms.
+        super().__init__({}, env, scale_by_dt=False)
+        del self._resolved_terms
         self.group_rewards = torch.zeros(self.num_envs, len(GROUPS), device=self.device)
         self.step_counter = -1
         self._groups = {}
@@ -37,6 +31,15 @@ class HostRewardManager(RewardManager):
             self._groups[name] = group
         if any(group not in GROUPS[1:] for group in env.cfg.reward_group_positive):
             raise ValueError("Positive clipping applies only to additive HoST groups")
+
+    def _prepare_terms(self):
+        """Adopt publicly resolved terms without copying or constructing them again."""
+        self.cfg = dict(self._resolved_terms)
+        for name, cfg in self.cfg.items():
+            self._term_names.append(name)
+            self._term_cfgs.append(cfg)
+            if callable(getattr(cfg.func, "reset", None)):
+                self._class_term_cfgs.append(cfg)
 
     def compute(self, dt):
         self.group_rewards.zero_()
@@ -63,7 +66,11 @@ class HostRewardManager(RewardManager):
             # Keep original HoST numerical behavior in group rewards. Only
             # MJLab's diagnostic term logs use its usual NaN sanitization.
             logged = torch.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
-            self._step_reward[:, column] = logged
+            # MJLab's public iterable diagnostics expose weighted rates, while
+            # episode sums include the group's integration coefficient.
+            self._step_reward[:, column] = torch.nan_to_num(
+                raw * cfg.weight, nan=0.0, posinf=0.0, neginf=0.0
+            )
             self._episode_sums[name] += logged
         self._reward_buf.copy_(self.group_rewards.sum(dim=-1))
         self.step_counter = self._env.common_step_counter

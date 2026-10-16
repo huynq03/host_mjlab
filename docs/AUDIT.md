@@ -2,6 +2,17 @@
 
 ## Current architecture refinement
 
+Follow-up static review: the requested architecture was already present at
+`c246598`. The manager now adopts resolved terms through `_prepare_terms`,
+letting MJLab allocate its own bookkeeping buffers instead of reconstructing
+them locally. This preserves callable identity and native reset/visualization
+hooks without repeating class constructors. Public per-term diagnostics now
+expose `raw * weight` rates as MJLab specifies; episode sums retain the
+group-specific integration coefficient. Four-group PPO inputs and the original
+equations, multiplication, gating, accumulation order and clipping are unchanged.
+Only source inspection, AST parsing, lint/format and Git whitespace checks were
+performed for this follow-up; no tests or project imports were run.
+
 This section supersedes the historical implementation details below. This
 revision was reviewed statically only: no project imports, environment creation,
 simulation, training, evaluation, GPU execution or tests were performed.
